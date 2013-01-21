@@ -34,30 +34,27 @@ module Faye
       @ns    = @options[:namespace] || ''
       socket = @options[:socket]
       
-      if socket
-        @redis      = EventMachine::Hiredis::Client.connect(socket, nil)
-        @subscriber = EventMachine::Hiredis::Client.connect(socket, nil)
-      else
-        @redis      = EventMachine::Hiredis::Client.connect(host, port)
-        @subscriber = EventMachine::Hiredis::Client.connect(host, port)
-      end
-      if auth
-        @redis.auth(auth)
-        @subscriber.auth(auth)
-      end
-      @redis.select(db)
-      @subscriber.select(db)
+	  
+	  @zeromq = ZeroServer.new(self, @options[:zeromq_port])
+	  
+	  #
+	  # couchbase needs to obtain the already known ports and register them
+	  #	After updating them with its own IP
+	  #
       
       @subscriber.subscribe(@ns + '/notifications')
       @subscriber.on(:message) do |topic, message|
         empty_queue(message) if topic == @ns + '/notifications'
       end
       
-      
-      
-      
       @gc = EventMachine.add_periodic_timer(gc, &method(:gc))
     end
+	
+	def update(channel)
+		#
+		# TODO:: channel could be a node update signal
+		#
+	end
     
     def disconnect
       return unless @redis
@@ -175,6 +172,17 @@ module Faye
     end
     
   private
+  
+  
+  	def couchbase
+		@couchbase ||= begin
+			couchbase = Couchbase.connect(@options)
+			couchbase.on_error do |opcode, key, exc|
+				@server.debug 'Couchbase threw an error: op:? key:? exc:?', opcode, key, exc
+			end
+			couchbase
+		end
+	end
     
     def get_current_time
       (Time.now.to_f * 1000).to_i

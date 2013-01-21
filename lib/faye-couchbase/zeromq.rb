@@ -1,9 +1,9 @@
 # http://techno-weenie.net/2011/6/17/zeromq-pub-sub/
 
 
-require 'couchbase'
 require 'em-zeromq'
 require 'json'
+require 'singleton'
 
 
 
@@ -12,26 +12,24 @@ require 'json'
 #
 
 
-
-class Server
+module Faye
+class ZeroServer
+	include Singleton
 	
 	
-	
-	def initialize(couchbase, port)
-		@port = port
-		@couchbase = couchbase
-	end
-	
-	
-	def init
+	def init(port, nodes, callback = nil, &block)
 		return if @context
 		
-		couchbase
+		callback ||= block
+		@nodes = []
 		
 		pub_socket
 		sub_socket.on(:message) { |part|
-			@clients = 
+			callback.call(part.copy_out_string)
+			part.close
 		}
+		
+		register_nodes(nodes)
 	end
 	
 	
@@ -46,6 +44,14 @@ class Server
 		@context	= nil
 		@pub_socket = nil
 		@sub_socket = nil
+	end
+	
+	
+	def register_nodes(nodes)
+		#
+		# TODO:: find all the nodes that are not known and register them
+		#	Then find all the nodes no longer listed and unregister them
+		#
 	end
 	
 	
@@ -66,7 +72,9 @@ class Server
 	
 	def publish(channels)
 		init
-		pub_socket.send_msg(*channels)
+		channels.each do |channel|
+			pub_socket.send_msg(channel)
+		end
 	end
 	
 	
@@ -77,7 +85,6 @@ class Server
 		@pub_socket ||= begin
 			pub_socket = context.socket(ZMQ::PUB)
 			pub_socket.bind("tcp://*:#{@options[:zeromq_port]}")
-			pub_socket.bind("tcp://*:#{@options[:zeromq_port]}")
 			pub_socket
 		end
 	end
@@ -87,16 +94,6 @@ class Server
 			sub_socket = context.socket(ZMQ::SUB)
 			sub_socket.connect("tcp://127.0.0.1:#{@options[:zeromq_port]}")
 			sub_socket
-		end
-	end
-	
-	def couchbase
-		@couchbase ||= begin
-			couchbase = Couchbase.connect(@options)
-			couchbase.on_error do |opcode, key, exc|
-				@server.debug 'Couchbase threw an error: op:? key:? exc:?', opcode, key, exc
-			end
-			couchbase
 		end
 	end
 	
@@ -113,4 +110,5 @@ class Server
 	def context
 		@context ||= EM::ZeroMQ::Context.new(1)
 	end	
+end
 end
