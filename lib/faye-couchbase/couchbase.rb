@@ -1,26 +1,30 @@
-require 'em-hiredis'
-require 'yajl'
+require 'couchbase'
+
 
 module Faye
-  class Redis
+  class Couchbase
     
-    DEFAULT_HOST     = 'localhost'
-    DEFAULT_PORT     = 6379
-    DEFAULT_DATABASE = 0
-    DEFAULT_GC       = 60
-    LOCK_TIMEOUT     = 120
+    #DEFAULT_HOST     = 'localhost'
+    #DEFAULT_PORT     = 6379
+    #DEFAULT_DATABASE = 0
+    #DEFAULT_GC       = 60
+    #LOCK_TIMEOUT     = 120
     
     def self.create(server, options)
       new(server, options)
     end
     
     def initialize(server, options)
-      @server  = server
-      @options = options
-    end
+		@server  = server
+		@options = {
+			:zeromq_port => 5555,		# the only ZeroMQ option
+			:hostname => "localhost",	# Remaining options are for CouchBase
+			:port => 8091
+		}.merge!(options)
+	end
     
     def init
-      return if @redis
+      return if @couchbase
       
       host   = @options[:host]      || DEFAULT_HOST
       port   = @options[:port]      || DEFAULT_PORT
@@ -48,6 +52,9 @@ module Faye
       @subscriber.on(:message) do |topic, message|
         empty_queue(message) if topic == @ns + '/notifications'
       end
+      
+      
+      
       
       @gc = EventMachine.add_periodic_timer(gc, &method(:gc))
     end

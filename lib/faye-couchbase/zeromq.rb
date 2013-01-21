@@ -16,13 +16,10 @@ require 'json'
 class Server
 	
 	
-	def initialize(server, options)
-		@server  = server
-		@options = {
-			:zeromq_port => 5555,		# the only ZeroMQ option
-			:hostname => "localhost",	# Remaining options are for CouchBase
-			:port => 8091
-		}.merge!(options)
+	
+	def initialize(couchbase, port)
+		@port = port
+		@couchbase = couchbase
 	end
 	
 	
