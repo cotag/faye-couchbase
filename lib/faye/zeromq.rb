@@ -136,14 +136,13 @@ module Faye
 		def init
 			return if @discoverable
 			
-			@discoverable = Faye::FayeServer.new
-			@discoverable.ip_addresses = ip_addresses(@options[:ip_v4])
-			@discoverable.save!	# trigger an error if we are not discoverable
+			@discoverable = Faye::ServerNode.new
+			@discoverable.ip_addresses = []
 			
 			#
-			# @heartbeat every 2min to let other nodes know you are here
-			# => if the model can't be found we must assume we have disconnected
-			# => TODO:: should we then try to reconnect? or kill this instance? How to do this gracefully
+			# @heartbeat every 1min to let other nodes know we are here
+			# if the model can't be found we must assume we have disconnected
+			#	(it's been > 2min since last heart beat as ttl is 2min)
 			#
 			@heartbeat = EventMachine.add_periodic_timer( 60, &method(:check_pulse) )
 			
@@ -152,9 +151,8 @@ module Faye
 			# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
 			#	(will always be a comparatively small data-set)
 			#
-			other_nodes = Faye::FayeServer.all(false)
-			get_node_list(other_nodes)
-			# TODO:: signal the other nodes of our presence here
+			get_node_list
+			check_pulse
 		end
 		
 		def disconnect
@@ -163,13 +161,18 @@ module Faye
 			@heartbeat.cancel
 			begin
 				@discoverable.delete
-				Faye::FayeServer.all(:update_after)	# trigger a cache re-build however execute this request quickly
+				Faye::ServerNode.all(false)	# trigger a cache re-build
 			rescue
 			ensure
 				@discoverable = nil
 				@heartbeat = nil
 				@peers = []
 			end
+		end
+		
+		
+		def signal_peers(message)
+			signal(@peers, message)
 		end
 		
 		
@@ -188,12 +191,14 @@ module Faye
 			
 			begin
 				if difference1.empty? && difference2.empty?
-					@discoverable.touch
+					@discoverable.touch unless @discoverable.id.nil?
 				else
 					@discoverable.ip_addresses = current_ips
 					@discoverable.save!					# this should set ttl - other nodes will update within the min
-					Faye::FayeServer.all(:update_after)
-					# Trigger an update here?
+					EventMachine.defer do
+						Faye::ServerNode.all(false)
+						signal_peers('ping')
+					end
 				end
 			rescue
 				disconnect
@@ -202,10 +207,19 @@ module Faye
 		end
 		
 		
-		def get_node_list(nodes = nil)
+		def signal(peers, message)
+			EventMachine.schedule do
+				#
+				# TODO:: Connect to all the peers and send them the message
+				#
+			end
+		end
+		
+		
+		def get_node_list
 			ips = []
 			
-			nodes = Faye::FayeServer.all if nodes.nil?
+			nodes = Faye::ServerNode.all
 			nodes.each do |node|
 				ips += node.ip_addresses if node.id != @discoverable.id
 			end
