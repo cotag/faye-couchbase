@@ -1,4 +1,6 @@
 # http://techno-weenie.net/2011/6/17/zeromq-pub-sub/
+# # TODO:: Socket.ip_address_list.detect {|intf| intf.ipv4_private?}
+# -> lets simplify to a single ip address
 
 
 require 'em-zeromq'
@@ -13,15 +15,20 @@ require 'json'
 
 module Faye
 	class ZeroServer
+	
+	
+		def initialize(options)
+			@options = options
+			@discovery = NodeSignaling.new(options)
+		end
 		
 		
-		def init(options, signal, notify)
+		def init
 			return if @context
 			
-			@nodes = []
+			pub_socket(options[:com_port] || )
 			
-			pub_socket(options[:com_port] || 5555)
-			sub_socket(options[:com_port] || 5555).on(:message) { |part|
+			sub_socket(options[:com_port] || 20789).on(:message) { |part|
 				resp = part.copy_out_string
 				part.close
 				notify.call(resp)
@@ -97,14 +104,6 @@ module Faye
 			end
 		end
 		
-		def sig_socket(port)
-			@sig_socket ||= begin
-				sig_socket = context.socket(ZMQ::REP)
-				sig_socket.connect("tcp://*:#{port}")
-				sig_socket
-			end
-		end
-		
 		
 		def publish(channels)
 			init
@@ -115,17 +114,24 @@ module Faye
 		
 		
 		def disconnect_from(ip)
-			port = @options[:zeromq_port]	# needs to be local as we lose access to self
+			port = @options[:zeromq_port]	# needs to be local as we lose access to self in eval
 			@sub_socket.instance_eval { @socket.disconnect("tcp://#{ip}:#{port}") }
 		end
 		
 		
 		def context
 			@context ||= EM::ZeroMQ::Context.new(1)
-		end	
+		end
 	end
 	
 	
+	
+	
+	
+	
+	#
+	# This is in effect our node discovery class
+	#
 	class NodeSignaling
 		
 		def initialize(options)
@@ -148,8 +154,6 @@ module Faye
 			
 			#
 			# Inform other nodes of our presence
-			# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
-			#	(will always be a comparatively small data-set)
 			#
 			get_node_list
 			check_pulse
@@ -158,6 +162,9 @@ module Faye
 		def disconnect
 			return unless @discoverable
 			
+			#
+			# Update the database
+			#
 			@heartbeat.cancel
 			begin
 				@discoverable.delete
@@ -168,6 +175,28 @@ module Faye
 				@heartbeat = nil
 				@peers = []
 			end
+			
+			#
+			# Shutdown the sockets and signal an update
+			#
+			return unless @context
+			@sig_socket.unbind
+			@sig_socket = nil
+			@context.terminate
+			@context	= nil
+		end
+		
+		
+		def on_subscribe(&block)
+			@subscriber = block
+		end
+		
+		def on_unsubscribe(&block)
+			@unsubscriber = block
+		end
+		
+		def on_signal(&block)
+			@signal_handler = block
 		end
 		
 		
@@ -196,6 +225,8 @@ module Faye
 					@discoverable.ip_addresses = current_ips
 					@discoverable.save!					# this should set ttl - other nodes will update within the min
 					EventMachine.defer do
+						# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
+						#	(will always be a comparatively small data-set)
 						Faye::ServerNode.all(false)
 						signal_peers('ping')
 					end
@@ -208,9 +239,13 @@ module Faye
 		
 		
 		def signal(peers, message)
+			return unless @discoverable	# make sure we've initialised
 			EventMachine.schedule do
 				#
-				# TODO:: Connect to all the peers and send them the message
+				# TODO:: create a socket,
+				#	connect to all the known peers,
+				#	send them an update signal,
+				#	shutdown the socket
 				#
 			end
 		end
@@ -229,13 +264,13 @@ module Faye
 			#
 			difference1 = @peers - ips
 			difference2 = ips - @peers
-			if !(difference1.empty? && difference2.empty?)
-				@peers = ips
 				
-				#
-				# TODO:: subscribe / unsubscribe to nodes from the differences
-				#
-			end
+			#
+			# subscribe / unsubscribe to nodes from the differences
+			#
+			@peers = ips
+			@unsubscriber.call(difference1) unless difference1.empty?
+			@subscriber.call(difference2) unless difference2.empty?
 		end
 		
 		
@@ -257,6 +292,20 @@ module Faye
 			end
 			
 			list
+		end
+		
+		
+		def sig_socket(port)
+			@sig_socket ||= begin
+				sig_socket = context.socket(ZMQ::REP)
+				sig_socket.connect("tcp://*:#{port}")
+				sig_socket
+			end
+		end
+		
+		
+		def context
+			@context ||= EM::ZeroMQ::Context.new(1)
 		end
 		
 	end
