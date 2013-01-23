@@ -1,5 +1,5 @@
+Couchbase::Model::Configuration.design_documents_paths << Pathname.new(File.dirname(__FILE__))
 
-Couchbase::Model::Configuration.design_documents_paths << File.join(File.dirname(__FILE__), '../')
 module Faye
 	class ServerNode < Couchbase::Model
 		attribute :cluster_id, :ip_addresses
@@ -19,8 +19,8 @@ module Faye
 			self.cluster_id = ENV['COUCHBASE_CLUSTER'] || 1
 			
 			while self.id.nil?
-				count = self.class.bucket.incr("faye_server:#{self.cluster_id}:count", :create => true)
-				theid = "faye_server:#{self.cluster_id}:#{count}"
+				count = self.class.bucket.incr("faye_node:#{self.cluster_id}:count", :create => true)
+				theid = "faye_node:#{self.cluster_id}:#{count}"
 				self.id = theid if self.class.find_by_id(theid).nil?
 			end
 		end
@@ -49,7 +49,7 @@ module Faye
 		#
 		# Find all the faye servers registered in the current cluster
 		#
-		def self.all(stale = 'ok')
+		def self.all(stale = :ok)	# :ok, false, :update_after are all legal
 			# Requires :key
 			by_cluster_id(:key => (ENV['COUCHBASE_CLUSTER'] || 1), :stale => stale).to_a
 		end

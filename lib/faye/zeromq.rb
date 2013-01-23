@@ -130,23 +130,100 @@ module Faye
 		
 		def initialize(options)
 			@options = options
+			@peers = []
 		end
 		
-		def init(bucket)
-			model = Faye::FayeServer.new
-			model.ip_addresses = ip_addresses(@options[:ip_v4])
-			model.save!	# trigger an error if we have no ip address
+		def init
+			return if @discoverable
+			
+			@discoverable = Faye::FayeServer.new
+			@discoverable.ip_addresses = ip_addresses(@options[:ip_v4])
+			@discoverable.save!	# trigger an error if we are not discoverable
 			
 			#
-			# TODO:: @heartbeat = EventMachine.add_periodic_timer {model.touch}
-			# => if the model can't be found we must assume we have disconnected and are re-connecting
-			# => 
+			# @heartbeat every 2min to let other nodes know you are here
+			# => if the model can't be found we must assume we have disconnected
+			# => TODO:: should we then try to reconnect? or kill this instance? How to do this gracefully
 			#
+			@heartbeat = EventMachine.add_periodic_timer( 60, &method(:check_pulse) )
 			
-			other_nodes = model.class.all(:update_after)
+			#
+			# Inform other nodes of our presence
+			# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
+			#	(will always be a comparatively small data-set)
+			#
+			other_nodes = Faye::FayeServer.all(false)
+			get_node_list(other_nodes)
+			# TODO:: signal the other nodes of our presence here
 		end
+		
+		def disconnect
+			return unless @discoverable
+			
+			@heartbeat.cancel
+			begin
+				@discoverable.delete
+				Faye::FayeServer.all(:update_after)	# trigger a cache re-build however execute this request quickly
+			rescue
+			ensure
+				@discoverable = nil
+				@heartbeat = nil
+				@peers = []
+			end
+		end
+		
 		
 		protected
+		
+		
+		def check_pulse
+			current_ips = ip_addresses(@options[:ip_v4])
+			
+			#
+			# TODO:: use sets here instead of arrays for speed
+			#
+			difference1 = current_ips - @discoverable.ip_addresses
+			difference2 = @discoverable.ip_addresses - current_ips
+			
+			
+			begin
+				if difference1.empty? && difference2.empty?
+					@discoverable.touch
+				else
+					@discoverable.ip_addresses = current_ips
+					@discoverable.save!					# this should set ttl - other nodes will update within the min
+					Faye::FayeServer.all(:update_after)
+					# Trigger an update here?
+				end
+			rescue
+				disconnect
+				init				# attempt recovery
+			end
+		end
+		
+		
+		def get_node_list(nodes = nil)
+			ips = []
+			
+			nodes = Faye::FayeServer.all if nodes.nil?
+			nodes.each do |node|
+				ips += node.ip_addresses if node.id != @discoverable.id
+			end
+			
+			#
+			# TODO:: use sets here instead of arrays for speed
+			#
+			difference1 = @peers - ips
+			difference2 = ips - @peers
+			if !(difference1.empty? && difference2.empty?)
+				@peers = ips
+				
+				#
+				# TODO:: subscribe / unsubscribe to nodes from the differences
+				#
+			end
+		end
+		
 		
 		def ip_addresses(ip_v4 = true)
 			list = []
@@ -159,7 +236,7 @@ module Faye
 				end
 			else
 				Socket.ip_address_list.each do |a|
-					if !a.ipv4? && !(a.ipv6_sitelocal? || a.ipv6_linklocal? || a.ipv6_loopback?)
+					if !a.ipv4? && !(a.ipv6_linklocal? || a.ipv6_loopback?)
 						list << a
 					end
 				end
