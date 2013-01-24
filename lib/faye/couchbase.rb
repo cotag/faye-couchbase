@@ -4,12 +4,6 @@ require 'couchbase'
 module Faye
   class Couchbase
     
-    #DEFAULT_HOST     = 'localhost'
-    #DEFAULT_PORT     = 6379
-    #DEFAULT_DATABASE = 0
-    #DEFAULT_GC       = 60
-    #LOCK_TIMEOUT     = 120
-    
     def self.create(server, options)
       new(server, options)
     end
@@ -21,22 +15,13 @@ module Faye
 			:hostname => "localhost",	# Remaining options are for CouchBase
 			:port => 8091
 		}.merge!(options)
+		
+		@zeromq = ZeroServer.new(@options)
+		@zeromq.on_message do 
 	end
     
     def init
       return if @couchbase
-      
-      host   = @options[:host]      || DEFAULT_HOST
-      port   = @options[:port]      || DEFAULT_PORT
-      db     = @options[:database]  || DEFAULT_DATABASE
-      auth   = @options[:password]
-      gc     = @options[:gc]        || DEFAULT_GC
-      @ns    = @options[:namespace] || ''
-      socket = @options[:socket]
-      
-	  
-	  @zeromq = ZeroServer.new(self, @options[:zeromq_port])
-	  
 	  #
 	  # couchbase needs to obtain the already known ports and register them
 	  #	After updating them with its own IP
@@ -44,7 +29,7 @@ module Faye
       
       @subscriber.subscribe(@ns + '/notifications')
       @subscriber.on(:message) do |topic, message|
-        empty_queue(message) if topic == @ns + '/notifications'
+         if topic == @ns + '/notifications'
       end
       
       @gc = EventMachine.add_periodic_timer(gc, &method(:gc))

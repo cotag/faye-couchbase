@@ -1,6 +1,5 @@
 # http://techno-weenie.net/2011/6/17/zeromq-pub-sub/
-# # TODO:: Socket.ip_address_list.detect {|intf| intf.ipv4_private?}
-# -> lets simplify to a single ip address
+# # TODO:: http://api.zeromq.org/3-1:zmq-pgm
 
 
 require 'em-zeromq'
@@ -16,36 +15,35 @@ require 'json'
 module Faye
 	class ZeroServer
 	
-	
 		def initialize(options)
 			@options = options
+			
 			@discovery = NodeSignaling.new(options)
+			@discovery.on_subscribe do |ip|
+				sub_socket.connect("tcp://#{ip}:#{@options[:com_port] || 20789}")
+			end
+			@discovery.on_unsubscribe(&method(:disconnect_from))	# As the method isn't exposed by em-zeromq
 		end
 		
 		
 		def init
 			return if @context
 			
-			pub_socket(options[:com_port] || )
-			
-			sub_socket(options[:com_port] || 20789).on(:message) { |part|
+			pub_socket(@options[:com_port] || 20789)
+			sub_socket(@options[:com_port] || 20789).on(:message) { |part|
 				resp = part.copy_out_string
 				part.close
-				notify.call(resp)
+				@messenger.call(resp)
 			}
 			
-			sig_socket(options[:sig_port] || 6666).on(:message) { |part|
-				resp = part.copy_out_string
-				part.close
-				signal.call(resp)
-			}
-			
-			register_nodes(options[:nodes]) unless options[:nodes].nil?
+			@discovery.init
 		end
 		
 		
 		def disconnect
 			return unless @context
+			
+			@discovery.disconnect
 			
 			# trap("INT")
 			@pub_socket.unbind
@@ -58,28 +56,30 @@ module Faye
 		end
 		
 		
-		def register_nodes(nodes)
-			#
-			# TODO:: find all the nodes that are not known and register them
-			#	Then find all the nodes no longer listed and unregister them
-			#
-		end
-		
-		
 		def subscribe(channel, &callback)
 			init
 			@sub_socket.subscribe(channel)
-			@server.debug 'Subscribed ZeroMQ to channel ?', channel
 			callback.call if callback
 		end
 		
 		
 		def unsubscribe(channel, &callback)
 			@sub_socket.unsubscribe(channel) if @context
-			@server.debug 'Unsubscribed ZeroMQ from channel ?', channel
 			callback.call if callback
 		end
 		
+		
+		def publish(channels)
+			init
+			channels.each do |channel|
+				pub_socket.send_msg(channel)
+			end
+		end
+		
+		
+		def on_message(&block)
+			@messenger = block
+		end
 		
 		
 		private
@@ -105,16 +105,8 @@ module Faye
 		end
 		
 		
-		def publish(channels)
-			init
-			channels.each do |channel|
-				pub_socket.send_msg(channel)
-			end
-		end
-		
-		
 		def disconnect_from(ip)
-			port = @options[:zeromq_port]	# needs to be local as we lose access to self in eval
+			port = @options[:com_port] || 20789	# needs to be local as we lose access to self in eval
 			@sub_socket.instance_eval { @socket.disconnect("tcp://#{ip}:#{port}") }
 		end
 		
@@ -152,6 +144,12 @@ module Faye
 			#
 			@heartbeat = EventMachine.add_periodic_timer( 60, &method(:check_pulse) )
 			
+			
+			#
+			# Create our signal receiver port
+			#
+			sig_socket(options[:sig_port] || 6666).on(:message, &method(:sig_recieved))
+			
 			#
 			# Inform other nodes of our presence
 			#
@@ -174,16 +172,16 @@ module Faye
 				@discoverable = nil
 				@heartbeat = nil
 				@peers = []
+				
+				#
+				# Shutdown the sockets and signal an update
+				#
+				return unless @context
+				@sig_socket.unbind
+				@sig_socket = nil		# TODO:: mutex here to prevent shutting down during signalling (guess it could happen)
+				@context.terminate
+				@context	= nil
 			end
-			
-			#
-			# Shutdown the sockets and signal an update
-			#
-			return unless @context
-			@sig_socket.unbind
-			@sig_socket = nil
-			@context.terminate
-			@context	= nil
 		end
 		
 		
@@ -209,44 +207,35 @@ module Faye
 		
 		
 		def check_pulse
-			current_ips = ip_addresses(@options[:ip_v4])
+			current_ip = ip_address(@options[:ip_v4])
 			
-			#
-			# TODO:: use sets here instead of arrays for speed
-			#
-			difference1 = current_ips - @discoverable.ip_addresses
-			difference2 = @discoverable.ip_addresses - current_ips
-			
-			
-			begin
-				if difference1.empty? && difference2.empty?
-					@discoverable.touch unless @discoverable.id.nil?
-				else
-					@discoverable.ip_addresses = current_ips
-					@discoverable.save!					# this should set ttl - other nodes will update within the min
-					EventMachine.defer do
-						# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
-						#	(will always be a comparatively small data-set)
-						Faye::ServerNode.all(false)
-						signal_peers('ping')
-					end
+			if current_ip == @discoverable.ip_address
+				@discoverable.touch unless @discoverable.id.nil?	# This may occur is we don't have an IP
+			else
+				@discoverable.ip_address = current_ip
+				@discoverable.save!					# this should set ttl - other nodes will update within the min
+				EventMachine.defer do
+					# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
+					#	(will always be a comparatively small data-set)
+					Faye::ServerNode.all(false)
+					signal_peers('ping')
 				end
-			rescue
-				disconnect
-				init				# attempt recovery
 			end
+			
+		rescue
+			disconnect
+			init				# attempt recovery
 		end
 		
 		
 		def signal(peers, message)
 			return unless @discoverable	# make sure we've initialised
 			EventMachine.schedule do
-				#
-				# TODO:: create a socket,
-				#	connect to all the known peers,
-				#	send them an update signal,
-				#	shutdown the socket
-				#
+				port = options[:sig_port] || 6666
+				signaller = context.socket(ZMQ::REQ)
+				peers.each {|ip| signaller.connect("tcp://#{ip}:#{port}") }
+				signaller.send_msg(message)
+				signaller.unbind
 			end
 		end
 		
@@ -256,50 +245,52 @@ module Faye
 			
 			nodes = Faye::ServerNode.all
 			nodes.each do |node|
-				ips += node.ip_addresses if node.id != @discoverable.id
+				ips << node.ip_address if node.id != @discoverable.id
 			end
 			
 			#
 			# TODO:: use sets here instead of arrays for speed
 			#
-			difference1 = @peers - ips
-			difference2 = ips - @peers
-				
+			unsubscribe = @peers - ips
+			subscribe = ips - @peers
+			
 			#
 			# subscribe / unsubscribe to nodes from the differences
 			#
 			@peers = ips
-			@unsubscriber.call(difference1) unless difference1.empty?
-			@subscriber.call(difference2) unless difference2.empty?
+			@unsubscriber.call(unsubscribe) unless unsubscribe.empty?
+			@subscriber.call(subscribe) unless subscribe.empty?
 		end
 		
 		
-		def ip_addresses(ip_v4 = true)
-			list = []
-			
-			if ip_v4
-				Socket.ip_address_list.each do |a|
-					if a.ipv4? && !a.ipv4_loopback?
-						list << a
-					end
-				end
+		def ip_address(ip_v4 = true)
+			ip = if ip_v4
+				Socket.ip_address_list.detect {|a| a.ipv4? && !a.ipv4_loopback?}
 			else
-				Socket.ip_address_list.each do |a|
-					if !a.ipv4? && !(a.ipv6_linklocal? || a.ipv6_loopback?)
-						list << a
-					end
-				end
+				Socket.ip_address_list.detect {|a| !a.ipv4? && !(a.ipv6_linklocal? || a.ipv6_loopback?)}
 			end
-			
-			list
+			return ip.ip_address unless ip.nil?
+			nil
 		end
 		
 		
 		def sig_socket(port)
 			@sig_socket ||= begin
 				sig_socket = context.socket(ZMQ::REP)
-				sig_socket.connect("tcp://*:#{port}")
+				sig_socket.bind("tcp://*:#{port}")
 				sig_socket
+			end
+		end
+		
+		
+		def sig_recieved(part)
+			resp = part.copy_out_string
+			part.close
+			
+			if resp == 'ping'
+				get_node_list	# We only care for node discovery signals
+			else
+				@signal_handler.call(resp) if @signal_handler	# Delegate anything else
 			end
 		end
 		

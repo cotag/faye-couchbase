@@ -2,8 +2,8 @@ Couchbase::Model::Configuration.design_documents_paths << Pathname.new(File.dirn
 
 module Faye
 	class ServerNode < Couchbase::Model
-		attribute :cluster_id, :ip_addresses
-		validates :ip_addresses, :presence => true
+		attribute :cluster_id, :ip_address
+		validates :ip_address, :presence => true
 		
 		
 		view :by_cluster_id
@@ -35,7 +35,7 @@ module Faye
 		
 		
 		#
-		# This is used to auto-timeout servers that have crashed
+		# This is used to auto-timeout servers if they stop responding
 		#
 		defaults :ttl => 120
 		
