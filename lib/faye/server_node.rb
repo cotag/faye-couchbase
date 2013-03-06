@@ -1,4 +1,3 @@
-Couchbase::Model::Configuration.design_documents_paths << Pathname.new(File.dirname(__FILE__))
 
 module Faye
 	class ServerNode < Couchbase::Model

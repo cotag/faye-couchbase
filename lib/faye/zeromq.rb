@@ -33,7 +33,7 @@ module Faye
 			sub_socket(@options[:com_port] || 20789).on(:message) { |part|
 				resp = part.copy_out_string
 				part.close
-				@messenger.call(resp)
+				@messenger.call(resp) unless @messenger.nil?
 			}
 			
 			@discovery.init
@@ -224,7 +224,7 @@ module Faye
 			
 		rescue
 			disconnect
-			init				# attempt recovery
+			init				# attempt recovery (delay this by a few seconds EM)
 		end
 		
 		
