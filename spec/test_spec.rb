@@ -21,6 +21,10 @@ describe Faye::NodeSignaling do
 		})
 	end
 
+	it "should find valid IP addresses" do
+		@signaller.send(:ip_address, true).is_a? Array
+	end
+
 	it "should initialise" do
 		@signaller.init
 	end

@@ -135,7 +135,6 @@ module Faye
 			return if @discoverable
 			
 			@discoverable = Faye::ServerNode.new
-			@discoverable.ip_addresses = []
 			
 			#
 			# @heartbeat every 1min to let other nodes know we are here
@@ -148,7 +147,7 @@ module Faye
 			#
 			# Create our signal receiver port
 			#
-			sig_socket(options[:sig_port] || 6666).on(:message, &method(:sig_recieved))
+			sig_socket(@options[:sig_port] || 6666).on(:message, &method(:sig_recieved))
 			
 			#
 			# Inform other nodes of our presence
@@ -210,7 +209,7 @@ module Faye
 			current_ip = ip_address(@options[:ip_v4])
 			
 			if current_ip == @discoverable.ip_address
-				@discoverable.touch unless @discoverable.id.nil?	# This may occur is we don't have an IP
+				@discoverable.touch unless @discoverable.id.nil?	# This may occur if we don't have an IP
 			else
 				@discoverable.ip_address = current_ip
 				@discoverable.save!					# this should set ttl - other nodes will update within the min
