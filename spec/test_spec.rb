@@ -1,31 +1,44 @@
 require 'spec_helper'
 require 'faye/zeromq'
 
-describe Faye::ZeroServer do
-	before do
-		@zero_server = Faye::ZeroServer.new({
-			:ip_v4 => true
-		})
-	end
 
-	it "should pass" do
-		true.should eq(true)
-	end
-end
+#EM.run do
+	describe Faye::ZeroServer do
 
+		before :all do
+			@server1 = Faye::ZeroServer.new()
+			@server2 = Faye::ZeroServer.new({
+				:message_port => 20790,			# Slightly different port numbers
+				:signal_port => 6667			# To avoid clashes
+			})
+		end
 
-describe Faye::NodeSignaling do
-	before do
-		@signaller = Faye::NodeSignaling.new({
-			:ip_v4 => true
-		})
-	end
+		after :all do
+			#@server1.disconnect
+			#@server2.disconnect
+			#EM.stop
+		end
 
-	it "should find valid IP addresses" do
-		@signaller.send(:ip_address, true).is_a? Array
-	end
+		it "should be able to subscribe to a channel" do
+			EM.run do
+				@server1.init
+				@server2.init
 
-	it "should initialise" do
-		@signaller.init
+				EM::Timer.new(5) do
+					@server1.subscribe('test') do
+						# Callback works
+						true.should == true
+
+						@server1.on_message do |message|
+							warn message
+							EM.stop
+						end
+						@server2.publish({
+							:channels => ['test'], :message_id => 'some message'
+						})
+					end
+				end
+			end
+		end
 	end
-end
+#end

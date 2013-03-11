@@ -1,8 +1,10 @@
 
 module Faye
 	class ServerNode < Couchbase::Model
-		attribute :cluster_id, :ip_address
+		attribute :cluster_id, :ip_address, :message_port, :signal_port
 		validates :ip_address, :presence => true
+		validates :message_port, :presence => true	# Publish, Subscribe
+		validates :signal_port, :presence => true	# Request, Reply
 		
 		
 		view :by_cluster_id

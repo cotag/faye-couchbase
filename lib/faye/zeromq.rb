@@ -4,6 +4,11 @@
 
 require 'em-zeromq'
 require 'json'
+require 'socket'
+
+
+
+DEFAULT_ERROR = ->(error) { raise error }
 
 
 
@@ -15,12 +20,16 @@ require 'json'
 module Faye
 	class ZeroServer
 	
-		def initialize(options)
-			@options = options
+		def initialize(options = {})
+			@options = {
+				:message_port => 20789,
+				:signal_port => 6666,
+				:ip_v4 => true
+			}.merge!(options)
 			
-			@discovery = NodeSignaling.new(options)
+			@discovery = NodeSignaling.new(@options)
 			@discovery.on_subscribe do |ip|
-				sub_socket.connect("tcp://#{ip}:#{@options[:com_port] || 20789}")
+				sub_socket.connect("tcp://#{ip}")
 			end
 			@discovery.on_unsubscribe(&method(:disconnect_from))	# As the method isn't exposed by em-zeromq
 		end
@@ -29,8 +38,8 @@ module Faye
 		def init
 			return if @context
 			
-			pub_socket(@options[:com_port] || 20789)
-			sub_socket(@options[:com_port] || 20789).on(:message) { |part|
+			pub_socket
+			sub_socket.on(:message) { |part|
 				resp = part.copy_out_string
 				part.close
 				@messenger.call(resp) unless @messenger.nil?
@@ -48,32 +57,36 @@ module Faye
 			# trap("INT")
 			@pub_socket.unbind
 			@sub_socket.unbind
-			@context.terminate
+			#@context.terminate
 			
-			@context	= nil
+			#@context	= nil
 			@pub_socket = nil
 			@sub_socket = nil
 		end
 		
 		
-		def subscribe(channel, &callback)
+		def subscribe(channel)
 			init
 			@sub_socket.subscribe(channel)
-			callback.call if callback
+			yield if block_given?	# Callback
 		end
 		
 		
-		def unsubscribe(channel, &callback)
+		def unsubscribe(channel)
 			@sub_socket.unsubscribe(channel) if @context
-			callback.call if callback
+			yield if block_given?	# Callback
 		end
 		
-		
-		def publish(channels)
+		#
+		# message = {:channels => ['array', 'of', 'strings'], :message_id => 'string'}
+		#
+		def publish(message)
 			init
-			channels.each do |channel|
-				pub_socket.send_msg(channel)
+			message[:channels].each do |channel|
+				pub_socket.send_msg(channel, message[:message_id])
 			end
+		rescue => error
+			block_given? ? yield(error) : DEFAULT_ERROR.call(error)
 		end
 		
 		
@@ -88,26 +101,25 @@ module Faye
 		#
 		# Helper functions
 		#
-		def pub_socket(port)
+		def pub_socket
 			@pub_socket ||= begin
 				pub_socket = context.socket(ZMQ::PUB)
-				pub_socket.bind("tcp://*:#{port}")
+				pub_socket.bind("tcp://*:#{@options[:message_port]}")
 				pub_socket
 			end
 		end
 		
-		def sub_socket(port)
+		def sub_socket
 			@sub_socket ||= begin
 				sub_socket = context.socket(ZMQ::SUB)
-				sub_socket.connect("tcp://127.0.0.1:#{port}")
+				sub_socket.connect("tcp://127.0.0.1:#{@options[:message_port]}")
 				sub_socket
 			end
 		end
 		
 		
 		def disconnect_from(ip)
-			port = @options[:com_port] || 20789	# needs to be local as we lose access to self in eval
-			@sub_socket.instance_eval { @socket.disconnect("tcp://#{ip}:#{port}") }
+			@sub_socket.instance_eval { @socket.disconnect("tcp://#{ip}") }
 		end
 		
 		
@@ -147,7 +159,7 @@ module Faye
 			#
 			# Create our signal receiver port
 			#
-			sig_socket(@options[:sig_port] || 6666).on(:message, &method(:sig_recieved))
+			sig_socket(@options[:signal_port]).on(:message, &method(:sig_recieved))
 			
 			#
 			# Inform other nodes of our presence
@@ -178,8 +190,8 @@ module Faye
 				return unless @context
 				@sig_socket.unbind
 				@sig_socket = nil		# TODO:: mutex here to prevent shutting down during signalling (guess it could happen)
-				@context.terminate
-				@context	= nil
+				#@context.terminate
+				#@context	= nil
 			end
 		end
 		
@@ -207,11 +219,17 @@ module Faye
 		
 		def check_pulse
 			current_ip = ip_address(@options[:ip_v4])
+
+			warn "ip: #{current_ip.nil?} and old #{@discoverable.ip_address}"
 			
 			if current_ip == @discoverable.ip_address
 				@discoverable.touch unless @discoverable.id.nil?	# This may occur if we don't have an IP
+				# TODO:: in the case where ip is nil we should be polling for an update in status
 			else
+				warn "Saving node discovery"
 				@discoverable.ip_address = current_ip
+				@discoverable.message_port = @options[:message_port]
+				@discoverable.signal_port = @options[:signal_port]
 				@discoverable.save!					# this should set ttl - other nodes will update within the min
 				EventMachine.defer do
 					# We call false here as couchbase doesn't update indexes on ttl data (23rd Jan 2013)
@@ -221,19 +239,24 @@ module Faye
 				end
 			end
 			
-		rescue
-			disconnect
-			init				# attempt recovery (delay this by a few seconds EM)
+		#rescue
+		#	disconnect
+		#	init				# attempt recovery (delay this by a few seconds EM)
 		end
 		
 		
-		def signal(peers, message)
+		def signal_peers(message)
 			return unless @discoverable	# make sure we've initialised
 			EventMachine.schedule do
-				port = options[:sig_port] || 6666
-				signaller = context.socket(ZMQ::REQ)
-				peers.each {|ip| signaller.connect("tcp://#{ip}:#{port}") }
-				signaller.send_msg(message)
+				warn "Signalling peers"
+				signaller = context.socket(ZMQ::PUSH)
+				@nodes.each do |node|
+					warn " -> tcp://#{node.ip_address}:#{node.signal_port}"
+					signaller.connect("tcp://#{node.ip_address}:#{node.signal_port}") if node.id != @discoverable.id && !node.ip_address.nil?
+				end
+				EM::Timer.new(1) do
+					signaller.send_msg(message)
+				end
 				signaller.unbind
 			end
 		end
@@ -242,9 +265,9 @@ module Faye
 		def get_node_list
 			ips = []
 			
-			nodes = Faye::ServerNode.all
-			nodes.each do |node|
-				ips << node.ip_address if node.id != @discoverable.id
+			@nodes = Faye::ServerNode.all
+			@nodes.each do |node|
+				ips << "#{node.ip_address}:#{node.message_port}" unless node.ip_address.nil?
 			end
 			
 			#
@@ -256,6 +279,7 @@ module Faye
 			#
 			# subscribe / unsubscribe to nodes from the differences
 			#
+			warn "Getting node list #{ips} from #{@nodes}"
 			@peers = ips
 			@unsubscriber.call(unsubscribe) unless unsubscribe.empty?
 			@subscriber.call(subscribe) unless subscribe.empty?
@@ -275,7 +299,7 @@ module Faye
 		
 		def sig_socket(port)
 			@sig_socket ||= begin
-				sig_socket = context.socket(ZMQ::REP)
+				sig_socket = context.socket(ZMQ::PULL)
 				sig_socket.bind("tcp://*:#{port}")
 				sig_socket
 			end
